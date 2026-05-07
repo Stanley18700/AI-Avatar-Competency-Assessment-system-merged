@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
 import departmentRoutes from './routes/departments';
@@ -42,13 +42,13 @@ async function runGeminiLiveCheck(): Promise<{ ok: boolean; model?: string; reas
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
+    const genAI = new GoogleGenAI({ apiKey });
+    const response = await genAI.models.generateContent({
       model: models[0],
-      generationConfig: { temperature: 0, maxOutputTokens: 8 }
+      contents: 'Reply with only: OK',
+      config: { temperature: 0, maxOutputTokens: 8 },
     });
-    const result = await model.generateContent('Reply with only: OK');
-    const text = result.response.text().trim();
+    const text = (response.text ?? '').trim();
     return { ok: text.length > 0, model: models[0], reason: text.length > 0 ? undefined : 'empty_response' };
   } catch (err) {
     return { ok: false, model: models[0], reason: err instanceof Error ? err.message : String(err) };

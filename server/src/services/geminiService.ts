@@ -1,6 +1,7 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import { AIEvaluationOutputSchema, validateAIOutput, AIEvaluationOutput } from '../validators/aiOutput';
 import { buildEvaluationPrompt } from '../utils/promptBuilder';
+
 
 interface CriteriaInfo {
   id: string;
@@ -9,6 +10,7 @@ interface CriteriaInfo {
   groupNameEn: string;
 }
 
+
 interface CaseInfo {
   title: string;
   descriptionTh: string;
@@ -16,11 +18,13 @@ interface CaseInfo {
   reasoningIndicators: string[];
 }
 
+
 export type AIEvaluationErrorCode =
   | 'AI_CONFIG_ERROR'
   | 'AI_PROVIDER_ERROR'
   | 'AI_PARSE_ERROR'
   | 'AI_VALIDATION_ERROR';
+
 
 export class AIEvaluationError extends Error {
   code: AIEvaluationErrorCode;
@@ -34,6 +38,7 @@ export class AIEvaluationError extends Error {
   }
 }
 
+
 /**
  * Attempt to repair common JSON issues from LLM output:
  * - Trailing commas before ] or }
@@ -41,32 +46,25 @@ export class AIEvaluationError extends Error {
  * - Extra text after JSON
  */
 function repairJson(str: string): string {
-  // Remove trailing commas before } or ]
   let fixed = str.replace(/,\s*([}\]])/g, '$1');
-  
-  // Try parsing as-is first
+
   try {
     JSON.parse(fixed);
     return fixed;
-  } catch {}
+  } catch { }
 
-  // If truncated, try to close open brackets/braces
   const opens = (fixed.match(/\[/g) || []).length;
   const closes = (fixed.match(/\]/g) || []).length;
   const openBraces = (fixed.match(/\{/g) || []).length;
   const closeBraces = (fixed.match(/\}/g) || []).length;
 
-  // Trim trailing incomplete entries (e.g. cut-off object in array)
-  // Remove last incomplete object if we have unclosed braces
   if (openBraces > closeBraces) {
-    // Try removing the last incomplete object entry
     const lastCompleteObj = fixed.lastIndexOf('}');
     if (lastCompleteObj > 0) {
       fixed = fixed.substring(0, lastCompleteObj + 1);
     }
   }
 
-  // Close remaining brackets
   for (let i = 0; i < opens - (fixed.match(/\]/g) || []).length; i++) {
     fixed += ']';
   }
@@ -74,15 +72,40 @@ function repairJson(str: string): string {
     fixed += '}';
   }
 
-  // Remove trailing commas again after repair
   fixed = fixed.replace(/,\s*([}\]])/g, '$1');
-
   return fixed;
 }
+
+
+// ── Vertex AI fallback helper (now uses @google/genai) ──────────────────────
+async function generateWithVertex(prompt: string, modelName: string): Promise<string> {
+  const project = process.env.VERTEX_PROJECT_ID;
+  const location = process.env.VERTEX_LOCATION || 'us-central1';
+  if (!project) throw new Error('VERTEX_PROJECT_ID not configured');
+
+  const vertex = new GoogleGenAI({
+    vertexai: true,
+    project,
+    location,
+  });
+
+  const response = await vertex.models.generateContent({
+    model: modelName,
+    contents: prompt,
+    config: {
+      temperature: 0.1,
+      topP: 0.95,
+    },
+  });
+
+  return response.text ?? '';
+}
+
 
 function clamp(num: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, num));
 }
+
 
 function normalizeParsedOutput(parsed: unknown): unknown {
   if (!parsed || typeof parsed !== 'object') return parsed;
@@ -112,15 +135,13 @@ function normalizeParsedOutput(parsed: unknown): unknown {
   return next;
 }
 
+
 function asEvaluationError(err: unknown, fallbackCode: AIEvaluationErrorCode): AIEvaluationError {
-  if (err instanceof AIEvaluationError) {
-    return err;
-  }
-  if (err instanceof Error) {
-    return new AIEvaluationError(fallbackCode, err.message, err.stack);
-  }
+  if (err instanceof AIEvaluationError) return err;
+  if (err instanceof Error) return new AIEvaluationError(fallbackCode, err.message, err.stack);
   return new AIEvaluationError(fallbackCode, String(err));
 }
+
 
 export async function evaluateWithGemini(
   criteria: CriteriaInfo[],
@@ -128,6 +149,7 @@ export async function evaluateWithGemini(
   transcript: string,
   retryCount: number = 0
 ): Promise<{ output: AIEvaluationOutput; rawResponse: string; retryCount: number }> {
+
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY;
   if (!apiKey) {
     throw new AIEvaluationError(
@@ -136,8 +158,9 @@ export async function evaluateWithGemini(
     );
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  // Prefer gemini-2.5-flash first since some keys/projects may have 2.0 free-tier quota set to 0
+  // ── AI Studio client ────────────────────────────────────────────────────
+  const genAI = new GoogleGenAI({ apiKey });
+
   const configuredModels = (process.env.GEMINI_MODELS || 'gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite')
     .split(',')
     .map(m => m.trim())
@@ -152,16 +175,9 @@ export async function evaluateWithGemini(
   let lastError: string = '';
   let lastFailure: AIEvaluationError | null = null;
 
+  // ── AI Studio model loop ────────────────────────────────────────────────
   for (const modelName of configuredModels) {
     console.log(`[Gemini] Trying model: ${modelName}`);
-    const model = genAI.getGenerativeModel({
-      model: modelName,
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.95,
-        maxOutputTokens: 2048,
-      }
-    });
 
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
@@ -171,14 +187,23 @@ export async function evaluateWithGemini(
 
         let responseText = '';
         try {
-          const result = await model.generateContent(fullPrompt);
-          responseText = result.response.text();
-        } catch (providerErr) {
-          throw new AIEvaluationError(
-            'AI_PROVIDER_ERROR',
-            `Gemini request failed on model ${modelName}`,
-            providerErr instanceof Error ? providerErr.message : String(providerErr)
-          );
+          const response = await genAI.models.generateContent({
+            model: modelName,
+            contents: fullPrompt,
+            config: {
+              temperature: 0.1,
+              topP: 0.95,
+              maxOutputTokens: 2048,
+            },
+          });
+          responseText = response.text ?? '';
+        } catch (err: any) {
+          lastError = err.message || 'Unknown error';
+          if (err.message?.includes('503') || err.message?.includes('Service Unavailable')) {
+            console.warn(`[Gemini] Model ${modelName} returned 503, skipping to next model`);
+            break;
+          }
+          console.error(`[Gemini] Model ${modelName}, attempt ${attempt + 1} failed:`, lastError);
         }
 
         console.log(`[Gemini] Model ${modelName}, attempt ${attempt + 1}: Received response (length: ${responseText.length})`);
@@ -198,7 +223,6 @@ export async function evaluateWithGemini(
           }
         }
 
-        // Try direct parse first, then attempt repair
         let parsed: unknown;
         try {
           parsed = JSON.parse(jsonStr);
@@ -248,6 +272,7 @@ export async function evaluateWithGemini(
           rawResponse: responseText,
           retryCount: retryCount + attempt
         };
+
       } catch (err: any) {
         const evaluationErr = asEvaluationError(err, 'AI_PROVIDER_ERROR');
         lastFailure = evaluationErr;
@@ -256,12 +281,56 @@ export async function evaluateWithGemini(
           `[Gemini] Model ${modelName}, attempt ${attempt + 1} failed (${evaluationErr.code}):`,
           evaluationErr.details || lastError
         );
-        if (attempt === 1) {
-          break;
-        }
+        if (attempt === 1) break;
       }
     }
   }
+
+  // ── Vertex AI fallback ──────────────────────────────────────────────────
+  const vertexProject = process.env.VERTEX_PROJECT_ID;
+  const vertexModels = (process.env.VERTEX_MODELS || 'gemini-2.5-flash')
+    .split(',').map(m => m.trim()).filter(Boolean);
+
+  if (vertexProject && vertexModels.length > 0) {
+    console.warn('[Gemini] All AI Studio models failed. Switching to Vertex AI fallback...');
+
+    for (const modelName of vertexModels) {
+      console.log(`[Vertex] Trying model: ${modelName}`);
+      try {
+        const responseText = await generateWithVertex(prompt, modelName);
+        if (!responseText) throw new Error('Empty Vertex AI response');
+
+        let jsonStr = responseText;
+        const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (jsonMatch) {
+          jsonStr = jsonMatch[1].trim();
+        } else {
+          const braceMatch = responseText.match(/\{[\s\S]*\}/);
+          if (braceMatch) jsonStr = braceMatch[0];
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          const repaired = repairJson(jsonStr);
+          parsed = JSON.parse(repaired);
+        }
+
+        const normalizedParsed = normalizeParsedOutput(parsed);
+        const validated = AIEvaluationOutputSchema.parse(normalizedParsed);
+        const rubricCheck = validateAIOutput(validated, expectedIds);
+        if (!rubricCheck.valid) throw new Error(rubricCheck.errors.join('; '));
+
+        console.log(`[Vertex] Success with model ${modelName}`);
+        return { output: validated, rawResponse: responseText, retryCount: retryCount + 1 };
+
+      } catch (err: any) {
+        console.error(`[Vertex] Model ${modelName} failed:`, err.message);
+      }
+    }
+  }
+  // ── End Vertex AI fallback ──────────────────────────────────────────────
 
   throw (
     lastFailure ||

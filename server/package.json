@@ -17,7 +17,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^1.52.0",
     "@prisma/client": "^6.3.0",
     "@react-pdf/renderer": "^4.1.6",
     "bcryptjs": "^2.4.3",
