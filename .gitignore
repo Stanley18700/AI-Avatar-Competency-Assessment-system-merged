@@ -10,3 +10,5 @@ server/prisma/dev.db
 server/prisma/dev.db-*
 server/prisma/**/*.db
 server/prisma/**/*.db-*
+
+credentials.json

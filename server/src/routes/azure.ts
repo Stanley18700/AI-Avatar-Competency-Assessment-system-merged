@@ -8,8 +8,9 @@ router.use(authenticate);
 function azureNotConfigured(res: Response): void {
   res.status(503).json({
     success: false,
-    message:
-      'Azure Speech ไม่ได้ตั้งค่า (AZURE_SPEECH_KEY / AZURE_SPEECH_REGION)',
+    configured: false,
+    message: 'Azure Speech ไม่ได้ตั้งค่า (AZURE_SPEECH_KEY / AZURE_SPEECH_REGION)',
+    fallback: 'browser-stt',  // signal to client to use browser Web Speech API instead
   });
 }
 

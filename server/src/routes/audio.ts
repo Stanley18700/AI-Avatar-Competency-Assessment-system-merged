@@ -8,8 +8,8 @@ const MAX_TEXT_LENGTH = 800;
 
 // POST /api/audio/synthesize
 router.post('/synthesize', async (req, res) => {
+    const { text, gender } = req.body;
     try {
-        const { text, gender } = req.body;
 
         if (!text) {
             res.status(400).json({ error: 'Text is required' });
@@ -35,9 +35,16 @@ router.post('/synthesize', async (req, res) => {
 
         res.send(audioBuffer);
     } catch (error: any) {
-        console.error('TTS Route Error:', error.message);
-        res.status(500).json({ error: 'TTS synthesis failed', detail: error.message });
-    }
+  console.error('TTS Route Error:', error.message);
+  // Return a structured error so the client can gracefully handle it
+  // e.g. show text instead of playing audio
+  res.status(503).json({
+    error: 'TTS_UNAVAILABLE',
+    message: 'Text-to-speech service is currently unavailable',
+    detail: error.message,
+    fallback: text  // send back the original text so client can display it
+  });
+}
 });
 
 export default router;

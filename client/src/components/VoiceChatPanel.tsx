@@ -33,7 +33,7 @@ export default function VoiceChatPanel({ sessionId, onConversationComplete, disa
   const turnTokenRef = useRef(0);
   const lastSubmittedRef = useRef<{ text: string; at: number }>({ text: '', at: 0 });
 
-  const handleNurseResponseRef = useRef<(text: string) => void>(() => {});
+  const handleNurseResponseRef = useRef<(text: string) => void>(() => { });
 
   // ── TTS fallback (browser / server / Google) ─────────────────────────────
   const { speak, cancelSpeech } = useVoiceChat({
@@ -109,7 +109,11 @@ export default function VoiceChatPanel({ sessionId, onConversationComplete, disa
     async (text: string) => {
       if (isMuted) return;
       if (azure.status === 'connecting') {
-        // Avoid immediate fallback TTS while avatar media is still negotiating.
+        return;
+      }
+      // If Azure is not configured, skip avatar entirely and go straight to browser TTS
+      if (azure.status === 'not-configured') {
+        await speak(text);
         return;
       }
       if (azure.isConnected) {
@@ -172,10 +176,23 @@ export default function VoiceChatPanel({ sessionId, onConversationComplete, disa
         }
       } catch (err: unknown) {
         console.error('AI chat error:', err);
-        const axiosErr = err as { response?: { data?: { error?: string } } };
-        setError(axiosErr.response?.data?.error || 'เกิดข้อผิดพลาดในการสนทนา');
+        const axiosErr = err as { response?: { data?: { error?: string; fallback?: string } } };
+        const errCode = axiosErr.response?.data?.error;
+        const fallbackText = axiosErr.response?.data?.fallback;
+
+        if (errCode === 'TTS_UNAVAILABLE' && fallbackText) {
+          // TTS failed but we have the text — show it as a message and continue
+          const newHistory: ConversationMessage[] = [
+            ...currentHistory,
+            { role: 'ai' as const, text: fallbackText },
+          ];
+          setHistory(newHistory);
+          setError('ระบบเสียงไม่พร้อมใช้งาน แสดงข้อความแทน');
+        } else {
+          setError(axiosErr.response?.data?.error || 'เกิดข้อผิดพลาดในการสนทนา');
+        }
+
         isProcessing.current = false;
-        // Restart listening even after error so user can retry
         if (!micMuted) void sttStartRef.current();
       } finally {
         setIsLoading(false);
