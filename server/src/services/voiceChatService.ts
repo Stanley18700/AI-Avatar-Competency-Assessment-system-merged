@@ -201,7 +201,7 @@ function normalizeChatResponsePayload(payload: unknown, aiTurns: number): ChatRe
 }
 
 
-// ── Vertex AI fallback helper (now uses @google/genai) ──────────────────────
+/// ── Vertex AI fallback helper ────────────────────────────────────────────────
 async function generateWithVertex(prompt: string, modelName: string): Promise<string> {
   const project = process.env.VERTEX_PROJECT_ID;
   const location = process.env.VERTEX_LOCATION || 'us-central1';
@@ -219,7 +219,7 @@ async function generateWithVertex(prompt: string, modelName: string): Promise<st
     config: {
       temperature: 0.7,
       topP: 0.9,
-      maxOutputTokens: 256,
+      // No maxOutputTokens — let the model decide
     },
   });
 
@@ -238,7 +238,6 @@ export async function generateChatResponse(
     throw new Error('[VoiceChat] GEMINI_API_KEY is not configured');
   }
 
-  // ── AI Studio client ────────────────────────────────────────────────────
   const genAI = new GoogleGenAI({ apiKey });
 
   const configuredModels = (process.env.GEMINI_MODELS || 'gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite')
@@ -302,70 +301,69 @@ ${historyText}
 
 คำสั่งสำหรับการตอบกลับรอบนี้:
 ${aiTurns === 0
-      ? `นี่คือ "การเปิดบทสนทนา"
-     1. ทักทายพยาบาลอย่างเป็นกันเองและแนะนำตัวสั้นๆ
-     2. เกริ่นถึงกรณีศึกษาโดยย่อ (สรุปเฉพาะประเด็นสำคัญ ไม่ต้องอ่านยาว) "คนไข้รายนี้..."
-     3. เริ่มต้นด้วย "คำถามปลายเปิด" เพื่อประเมินการประเมินสภาพผู้ป่วย (Assessment) หรือการตัดสินใจแรกรับ`
-      : forceComplete
-        ? `นี่คือ "การปิดบทสนทนา"
-     1. กล่าวขอบคุณพยาบาลสำหรับข้อมูล
-     2. แจ้งว่าระบบจะทำการประมวลผลผลการประเมินสักครู่
-     3. ตั้งค่า 'isComplete': true`
-        : `นี่คือ "การดำเนินบทสนทนาต่อเนื่อง"
-     1. ตอบรับคำตอบล่าสุดของพยาบาลสั้นๆ (Acknowledge) เพื่อให้รู้ว่าฟังอยู่
-     2. ถามคำถามเจาะลึก (Probing Question) หรือคำถามใหม่ ที่เชื่อมโยงกับ "Clinical Reasoning Indicators" หรือ "Competency Criteria" ที่ยังไม่ได้ถูกประเมิน
-     3. ถ้าพยาบาลตอบได้ดีแล้ว ให้ขยับไปประเด็นถัดไป เช่น การวางแผนจำหน่าย หรือ ภาวะแทรกซ้อน`
-    }
+    ? `นี่คือ "การเปิดบทสนทนา"
+   1. ทักทายพยาบาลอย่างเป็นกันเองและแนะนำตัวสั้นๆ
+   2. เกริ่นถึงกรณีศึกษาโดยย่อ (สรุปเฉพาะประเด็นสำคัญ ไม่ต้องอ่านยาว) "คนไข้รายนี้..."
+   3. เริ่มต้นด้วย "คำถามปลายเปิด" เพื่อประเมินการประเมินสภาพผู้ป่วย (Assessment) หรือการตัดสินใจแรกรับ`
+    : forceComplete
+      ? `นี่คือ "การปิดบทสนทนา"
+   1. กล่าวขอบคุณพยาบาลสำหรับข้อมูล
+   2. แจ้งว่าระบบจะทำการประมวลผลผลการประเมินสักครู่
+   3. ตั้งค่า 'isComplete': true`
+      : `นี่คือ "การดำเนินบทสนทนาต่อเนื่อง"
+   1. ตอบรับคำตอบล่าสุดของพยาบาลสั้นๆ (Acknowledge) เพื่อให้รู้ว่าฟังอยู่
+   2. ถามคำถามเจาะลึก (Probing Question) หรือคำถามใหม่ ที่เชื่อมโยงกับ "Clinical Reasoning Indicators" หรือ "Competency Criteria" ที่ยังไม่ได้ถูกประเมิน
+   3. ถ้าพยาบาลตอบได้ดีแล้ว ให้ขยับไปประเด็นถัดไป เช่น การวางแผนจำหน่าย หรือ ภาวะแทรกซ้อน`
+  }
 
 
 ข้อปฏิบัติสำคัญ (Strict Rules):
 1. **ภาษาไทยเท่านั้น**: ห้ามพูดภาษาอังกฤษ ยกเว้นชื่อยาหรือศัพท์เฉพาะทางที่ไม่มีคำไทยที่นิยมใช้
 2. **ห้ามอ่าน JSON หรือ Markdown**: ห้ามมีตัวอักษรพิเศษ เช่น * หรือ # ในข้อความที่จะพูด
-3. **Format**: ต้องส่งคืนเป็น JSON เท่านั้น
+3. **Format**: ต้องส่งคืนเป็น JSON เท่านั้น ห้ามใส่ markdown code block
 4. **ความยาว**: คำพูดของ AI ไม่ควรยาวเกิน 1-2 ประโยคหลัก เพื่อให้การสนทนาลื่นไหล
 
 
-รูปแบบการตอบกลับ (JSON Response Format):
-{
-  "message": "ข้อความภาษาไทยที่ AI จะพูดออกมา (String)",
-  "isComplete": ${forceComplete ? 'true' : 'false'} (Boolean),
-  "turnNumber": ${aiTurns + 1} (Number)
-}`;
+รูปแบบการตอบกลับ (JSON Response Format — raw JSON only, no code fences):
+{"message": "ข้อความภาษาไทย", "isComplete": ${forceComplete ? 'true' : 'false'}, "turnNumber": ${aiTurns + 1}}`;
+
+  function extractJson(raw: string): string {
+    let s = raw.trim();
+    const fence = s.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
+    if (fence) s = fence[1].trim();
+    if (!s.startsWith('{')) {
+      const start = s.indexOf('{');
+      const end = s.lastIndexOf('}');
+      if (start !== -1 && end > start) s = s.slice(start, end + 1);
+    }
+    return s;
+  }
 
   let lastError = '';
 
-  // ── AI Studio model loop ────────────────────────────────────────────────
+  // ── AI Studio model loop ─────────────────────────────────────────────────
   for (const modelName of configuredModels) {
     try {
-      const responseText = await generateWithVertex(prompt, modelName);
-      if (!responseText) throw new Error('Empty Vertex AI response');
+      const response = await genAI.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: { temperature: 0.7, topP: 0.9 },
+      });
 
-      let jsonStr = responseText.trim();
+      const responseText = response.text ?? '';
+      if (!responseText.trim()) throw new Error('Empty model response');
 
-      const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
-      if (fenceMatch) {
-        jsonStr = fenceMatch[1].trim();
-      }
-
-      if (!jsonStr.startsWith('{')) {
-        const braceStart = jsonStr.indexOf('{');
-        const braceEnd = jsonStr.lastIndexOf('}');
-        if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {
-          jsonStr = jsonStr.slice(braceStart, braceEnd + 1);
-        }
-      }
-
-      const parsed = normalizeChatResponsePayload(JSON.parse(jsonStr), aiTurns);
+      const parsed = normalizeChatResponsePayload(JSON.parse(extractJson(responseText)), aiTurns);
       if (forceComplete) parsed.isComplete = true;
-      console.log(`[Vertex] VoiceChat success with model ${modelName}`);
+      console.log(`[VoiceChat] AI Studio model ${modelName} → turn ${parsed.turnNumber}, complete=${parsed.isComplete}`);
       return parsed;
     } catch (err: any) {
-      console.error(`[Vertex] VoiceChat model ${modelName} failed:`, err.message);
+      lastError = err.message || 'Unknown error';
+      console.error(`[VoiceChat] Model ${modelName} failed:`, lastError);
     }
   }
 
-
-  // ── Vertex AI fallback ──────────────────────────────────────────
+  // ── Vertex AI fallback ───────────────────────────────────────────────────
   const vertexProject = process.env.VERTEX_PROJECT_ID;
   const vertexModels = (process.env.VERTEX_MODELS || 'gemini-2.5-flash')
     .split(',').map(m => m.trim()).filter(Boolean);
@@ -375,23 +373,9 @@ ${aiTurns === 0
     for (const modelName of vertexModels) {
       try {
         const responseText = await generateWithVertex(prompt, modelName);
-        if (!responseText) throw new Error('Empty Vertex AI response');
+        if (!responseText.trim()) throw new Error('Empty Vertex AI response');
 
-        let jsonStr = responseText.trim();
-        // Strip markdown fences (```json ... ``` or ``` ... ```)
-        const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
-        if (fenceMatch) {
-          jsonStr = fenceMatch[1].trim();
-        } else if (!jsonStr.startsWith('{')) {
-          // Extract first complete JSON object
-          const braceStart = jsonStr.indexOf('{');
-          const braceEnd = jsonStr.lastIndexOf('}');
-          if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {
-            jsonStr = jsonStr.slice(braceStart, braceEnd + 1);
-          }
-        }
-
-        const parsed = normalizeChatResponsePayload(JSON.parse(jsonStr), aiTurns);
+        const parsed = normalizeChatResponsePayload(JSON.parse(extractJson(responseText)), aiTurns);
         if (forceComplete) parsed.isComplete = true;
         console.log(`[Vertex] VoiceChat success with model ${modelName}`);
         return parsed;
@@ -400,7 +384,6 @@ ${aiTurns === 0
       }
     }
   }
-  // ── End Vertex AI fallback ───────────────────────────────────────
 
   console.warn('[VoiceChat] All models (AI Studio + Vertex) failed, using hardcoded fallback. Last error: ' + lastError);
   return buildFallbackChatResponse(caseInfo, history);
