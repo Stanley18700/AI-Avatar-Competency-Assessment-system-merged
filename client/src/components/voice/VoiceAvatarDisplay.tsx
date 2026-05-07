@@ -4,7 +4,7 @@ import AIAvatar from '../AIAvatar';
 import type { AvatarState } from '../AIAvatar';
 
 interface VoiceAvatarDisplayProps {
-  status: 'idle' | 'connecting' | 'connected' | 'error';
+  status: 'idle' | 'connecting' | 'connected' | 'error' | 'not-configured';
   /** Set when WebRTC has actually decoded a video frame (avoids silent "black box"). */
   videoFrameReady: boolean;
   /** Optional ICE/WebRTC warning surfaced from the hook. */

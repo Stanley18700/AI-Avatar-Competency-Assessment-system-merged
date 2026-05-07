@@ -8,7 +8,7 @@ import {
 } from 'microsoft-cognitiveservices-speech-sdk';
 import api from '../lib/api';
 
-export type AzureRecognizerStatus = 'idle' | 'connecting' | 'listening' | 'error';
+export type AzureRecognizerStatus = 'idle' | 'connecting' | 'listening' | 'error' | 'browser-stt';
 
 interface UseAzureSpeechRecognizerOptions {
   /** BCP-47 language tag. Defaults to 'th-TH'. */
@@ -39,6 +39,7 @@ export function useAzureSpeechRecognizer(
   const [isListening, setIsListening] = useState(false);
 
   const recognizerRef = useRef<SpeechRecognizer | null>(null);
+  const browserRecognizerRef = useRef<any>(null);
   const pendingTextRef = useRef('');
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -165,10 +166,43 @@ export function useAzureSpeechRecognizer(
         }
       );
     } catch (err) {
+  // Try browser STT fallback
+  const BrowserSTT = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+  if (BrowserSTT) {
+    const browserRec = new BrowserSTT();
+    browserRec.lang = lang;
+    browserRec.continuous = true;
+    browserRec.interimResults = true;
+    browserRecognizerRef.current = browserRec;
+
+    browserRec.onresult = (e: any) => {
+      let interim = '';
+      let final = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      if (interim) { setInterimText(interim); onInterimRef.current?.(interim); }
+      if (final.trim()) onTranscriptRef.current(final.trim());
+    };
+    browserRec.onerror = (e: any) => {
       setStatus('error');
       setIsListening(false);
-      onErrorRef.current?.(err instanceof Error ? err.message : String(err));
-    }
+      onErrorRef.current?.(e.error);
+    };
+    browserRec.onend = () => {
+      setIsListening(false);
+      setStatus('idle');
+    };
+    browserRec.start();
+    setStatus('browser-stt');
+    setIsListening(true);
+  } else {
+    setStatus('error');
+    setIsListening(false);
+    onErrorRef.current?.(err instanceof Error ? err.message : String(err));
+  }
+}
   }, [lang, debounceMs]);
 
   // Cleanup on unmount

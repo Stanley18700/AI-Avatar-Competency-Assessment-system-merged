@@ -203,10 +203,9 @@ export async function generateChatResponse(
   experienceLevel: string
 ): Promise<ChatResponse> {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY;
-  if (!apiKey) {
-    console.warn('[VoiceChat] Gemini key missing, using fallback conversation flow');
-    return buildFallbackChatResponse(caseInfo, history);
-  }
+if (!apiKey) {
+  throw new Error('[VoiceChat] GEMINI_API_KEY is not configured');
+}
 
   const genAI = new GoogleGenerativeAI(apiKey);
   const configuredModels = (process.env.GEMINI_MODELS || 'gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite')
@@ -332,6 +331,6 @@ ${aiTurns === 0
     }
   }
 
-  console.warn('[VoiceChat] All models failed, switching to fallback flow');
+  console.warn('[VoiceChat] All Gemini models failed, using hardcoded fallback. Last error: ' + lastError);
   return buildFallbackChatResponse(caseInfo, history);
 }

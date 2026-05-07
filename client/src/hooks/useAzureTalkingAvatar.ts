@@ -102,7 +102,7 @@ export interface UseAzureTalkingAvatarOptions {
 export interface UseAzureTalkingAvatarReturn {
   videoRef: RefObject<HTMLVideoElement | null>;
   audioRef: RefObject<HTMLAudioElement | null>;
-  status: 'idle' | 'connecting' | 'connected' | 'error';
+  status: 'idle' | 'connecting' | 'connected' | 'error' | 'not-configured';
   connectError: string | null;
   isConnected: boolean;
   isSpeaking: boolean;
@@ -139,7 +139,7 @@ export function useAzureTalkingAvatar(
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
+  const [status, setStatus] = useState<'idle' | 'connecting' | 'connected' | 'error' | 'not-configured'>('idle');
   const [connectError, setConnectError] = useState<string | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [character, setCharacter] = useState(initialCharacter);
@@ -161,7 +161,7 @@ export function useAzureTalkingAvatar(
 
   const [videoFrameReady, setVideoFrameReady] = useState(false);
   const [webrtcMediaHint, setWebrtcMediaHint] = useState<string | null>(null);
-  const statusRef = useRef<'idle' | 'connecting' | 'connected' | 'error'>('idle');
+  const statusRef = useRef<'idle' | 'connecting' | 'connected' | 'error' | 'not-configured'>('idle');
   const videoFrameReadyRef = useRef(false);
 
   useEffect(() => {
@@ -352,11 +352,16 @@ export function useAzureTalkingAvatar(
 
     try {
       const [tokenRes, iceRes] = await Promise.all([
-        api.get<{ success: boolean; token?: string; region?: string; message?: string }>(
-          '/azure/speech-token'
-        ),
-        api.get<{ success: boolean; iceServers?: unknown; message?: string }>('/azure/ice-token'),
-      ]);
+      api.get<{ success: boolean; token?: string; region?: string; configured?: boolean; message?: string }>('/azure/speech-token'),
+      api.get<{ success: boolean; iceServers?: unknown; configured?: boolean; message?: string }>('/azure/ice-token'),
+    ]);
+      // Check if Azure is not configured — silently skip instead of throwing
+      if ((tokenRes.data as any).configured === false || (iceRes.data as any).configured === false) {
+        setStatus('not-configured');
+        connectingRef.current = false;
+        clearNoFrameTimer();
+        return;
+      }
 
       if (!tokenRes.data.success || !tokenRes.data.token || !tokenRes.data.region) {
         throw new Error(tokenRes.data.message || 'ไม่สามารถเชื่อมต่อ Azure Speech ได้');
