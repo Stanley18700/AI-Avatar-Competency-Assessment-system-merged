@@ -300,14 +300,11 @@ export async function evaluateWithGemini(
         const responseText = await generateWithVertex(prompt, modelName);
         if (!responseText) throw new Error('Empty Vertex AI response');
 
-        let jsonStr = responseText.trim();
-
+        let jsonStr = responseText;
         const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
         if (fenceMatch) {
           jsonStr = fenceMatch[1].trim();
-        }
-
-        if (!jsonStr.startsWith('{')) {
+        } else if (!jsonStr.startsWith('{')) {
           const braceStart = jsonStr.indexOf('{');
           const braceEnd = jsonStr.lastIndexOf('}');
           if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {

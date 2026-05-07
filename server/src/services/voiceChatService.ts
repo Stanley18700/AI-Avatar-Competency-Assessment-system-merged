@@ -378,13 +378,12 @@ ${aiTurns === 0
         if (!responseText) throw new Error('Empty Vertex AI response');
 
         let jsonStr = responseText.trim();
-
+        // Strip markdown fences (```json ... ``` or ``` ... ```)
         const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
         if (fenceMatch) {
           jsonStr = fenceMatch[1].trim();
-        }
-
-        if (!jsonStr.startsWith('{')) {
+        } else if (!jsonStr.startsWith('{')) {
+          // Extract first complete JSON object
           const braceStart = jsonStr.indexOf('{');
           const braceEnd = jsonStr.lastIndexOf('}');
           if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {
