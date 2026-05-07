@@ -20,7 +20,8 @@ function voiceNameForGender(gender: AzureAvatarVoiceGender): string {
 }
 
 /** Insert SSML breaks after sentence-like boundaries for clearer pauses (text is plain; escaped before tags). */
-function buildProsodicSsmlBody(text: string): string {
+// AFTER
+function buildProsodicSsmlBody(text: string, rate = '-20%'): string {
   const t = text.trim();
   if (!t) return '';
   let e = escapeSsmlText(t);
@@ -28,7 +29,7 @@ function buildProsodicSsmlBody(text: string): string {
   e = e.replace(/\n{2,}/g, '<break time="400ms"/>');
   e = e.replace(/\n/g, '<break time="320ms"/>');
   e = e.replace(/([。！？.!?])(\s*)/gu, '$1$2<break time="300ms"/>');
-  return e;
+  return `<prosody rate="${rate}">${e}</prosody>`;
 }
 
 interface IceServerPayload {

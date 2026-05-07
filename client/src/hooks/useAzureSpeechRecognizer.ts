@@ -32,7 +32,7 @@ export interface UseAzureSpeechRecognizerReturn {
 export function useAzureSpeechRecognizer(
   options: UseAzureSpeechRecognizerOptions
 ): UseAzureSpeechRecognizerReturn {
-  const { lang = 'th-TH', debounceMs = 1500, onTranscript, onInterim, onError } = options;
+  const { lang = 'th-TH', debounceMs = 2500, onTranscript, onInterim, onError } = options;
 
   const [status, setStatus] = useState<AzureRecognizerStatus>('idle');
   const [interimText, setInterimText] = useState('');
