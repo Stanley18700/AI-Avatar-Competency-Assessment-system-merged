@@ -5,17 +5,34 @@ import { authenticate, requireRole, AuthRequest } from '../middleware/auth';
 const router = Router();
 router.use(authenticate);
 
+/** One row per logical department — DB may contain duplicates if seed ran multiple times; codes are stable identifiers when set. */
+function dedupeDepartments<
+  T extends { code: string; name: string; nameTh: string }
+>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const row of rows) {
+    const key = row.code?.trim() || `${row.name.trim()}|${row.nameTh.trim()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
 // GET /api/departments
 router.get('/', async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const departments = await prisma.department.findMany({
-      where: { active: true },
-      include: { 
-        clinicalIssues: { where: { active: true } },
-        _count: { select: { users: true, cases: true } }
-      },
-      orderBy: { name: 'asc' }
-    });
+    const departments = dedupeDepartments(
+      await prisma.department.findMany({
+        where: { active: true },
+        include: {
+          clinicalIssues: { where: { active: true } },
+          _count: { select: { users: true, cases: true } },
+        },
+        orderBy: { name: 'asc' },
+      })
+    );
     res.json(departments);
   } catch (error) {
     console.error('List departments error:', error);

@@ -1,10 +1,10 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { Language, getTranslations, getExperienceLevelLabels, getStatusLabels } from '../lib/i18n';
+import { Language, getTranslations, getExperienceLevelLabels, getStatusLabels, type Translation } from '../lib/i18n';
 
 interface LanguageContextType {
   language: Language;
   setLanguage: (lang: Language) => void;
-  t: ReturnType<typeof getTranslations>;
+  t: Translation;
   experienceLevelLabels: ReturnType<typeof getExperienceLevelLabels>;
   statusLabels: ReturnType<typeof getStatusLabels>;
 }

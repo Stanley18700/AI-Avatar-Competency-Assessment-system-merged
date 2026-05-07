@@ -16,6 +16,24 @@ interface CaseInfo {
   reasoningIndicators: string[];
 }
 
+export type AIEvaluationErrorCode =
+  | 'AI_CONFIG_ERROR'
+  | 'AI_PROVIDER_ERROR'
+  | 'AI_PARSE_ERROR'
+  | 'AI_VALIDATION_ERROR';
+
+export class AIEvaluationError extends Error {
+  code: AIEvaluationErrorCode;
+  details?: string;
+
+  constructor(code: AIEvaluationErrorCode, message: string, details?: string) {
+    super(message);
+    this.name = 'AIEvaluationError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
 /**
  * Attempt to repair common JSON issues from LLM output:
  * - Trailing commas before ] or }
@@ -62,6 +80,48 @@ function repairJson(str: string): string {
   return fixed;
 }
 
+function clamp(num: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, num));
+}
+
+function normalizeParsedOutput(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const obj = parsed as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...obj };
+
+  if (Array.isArray(obj.criteriaScores)) {
+    next.criteriaScores = obj.criteriaScores.map((item) => {
+      if (!item || typeof item !== 'object') return item;
+      const scoreRaw = (item as Record<string, unknown>).score;
+      const asNumber = Number(scoreRaw);
+      if (!Number.isFinite(asNumber)) return item;
+      return {
+        ...(item as Record<string, unknown>),
+        score: clamp(Math.round(asNumber), 1, 5),
+      };
+    });
+  }
+
+  if ('confidenceScore' in obj) {
+    const confidence = Number(obj.confidenceScore);
+    if (Number.isFinite(confidence)) {
+      next.confidenceScore = clamp(confidence, 0, 1);
+    }
+  }
+
+  return next;
+}
+
+function asEvaluationError(err: unknown, fallbackCode: AIEvaluationErrorCode): AIEvaluationError {
+  if (err instanceof AIEvaluationError) {
+    return err;
+  }
+  if (err instanceof Error) {
+    return new AIEvaluationError(fallbackCode, err.message, err.stack);
+  }
+  return new AIEvaluationError(fallbackCode, String(err));
+}
+
 export async function evaluateWithGemini(
   criteria: CriteriaInfo[],
   caseInfo: CaseInfo,
@@ -70,7 +130,10 @@ export async function evaluateWithGemini(
 ): Promise<{ output: AIEvaluationOutput; rawResponse: string; retryCount: number }> {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY or GOOGLE_CLOUD_API_KEY not configured');
+    throw new AIEvaluationError(
+      'AI_CONFIG_ERROR',
+      'GEMINI_API_KEY or GOOGLE_CLOUD_API_KEY not configured'
+    );
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
@@ -87,6 +150,7 @@ export async function evaluateWithGemini(
   console.log(`[Gemini] Expected criteria IDs:`, expectedIds);
 
   let lastError: string = '';
+  let lastFailure: AIEvaluationError | null = null;
 
   for (const modelName of configuredModels) {
     console.log(`[Gemini] Trying model: ${modelName}`);
@@ -105,8 +169,17 @@ export async function evaluateWithGemini(
           ? prompt
           : `${prompt}\n\nPREVIOUS ATTEMPT FAILED WITH ERROR: ${lastError}\nPlease fix the output and try again. Return ONLY the JSON, no other text.`;
 
-        const result = await model.generateContent(fullPrompt);
-        const responseText = result.response.text();
+        let responseText = '';
+        try {
+          const result = await model.generateContent(fullPrompt);
+          responseText = result.response.text();
+        } catch (providerErr) {
+          throw new AIEvaluationError(
+            'AI_PROVIDER_ERROR',
+            `Gemini request failed on model ${modelName}`,
+            providerErr instanceof Error ? providerErr.message : String(providerErr)
+          );
+        }
 
         console.log(`[Gemini] Model ${modelName}, attempt ${attempt + 1}: Received response (length: ${responseText.length})`);
 
@@ -126,16 +199,35 @@ export async function evaluateWithGemini(
         }
 
         // Try direct parse first, then attempt repair
-        let parsed: any;
+        let parsed: unknown;
         try {
           parsed = JSON.parse(jsonStr);
-        } catch (parseErr) {
+        } catch {
           console.log('[Gemini] Direct JSON parse failed, attempting repair...');
-          const repaired = repairJson(jsonStr);
-          parsed = JSON.parse(repaired);
-          console.log('[Gemini] JSON repair succeeded');
+          try {
+            const repaired = repairJson(jsonStr);
+            parsed = JSON.parse(repaired);
+            console.log('[Gemini] JSON repair succeeded');
+          } catch (repairErr) {
+            throw new AIEvaluationError(
+              'AI_PARSE_ERROR',
+              `Unable to parse Gemini JSON output for model ${modelName}`,
+              repairErr instanceof Error ? repairErr.message : String(repairErr)
+            );
+          }
         }
-        const validated = AIEvaluationOutputSchema.parse(parsed);
+
+        const normalizedParsed = normalizeParsedOutput(parsed);
+        let validated: AIEvaluationOutput;
+        try {
+          validated = AIEvaluationOutputSchema.parse(normalizedParsed);
+        } catch (schemaErr) {
+          throw new AIEvaluationError(
+            'AI_VALIDATION_ERROR',
+            `Gemini output schema validation failed on model ${modelName}`,
+            schemaErr instanceof Error ? schemaErr.message : String(schemaErr)
+          );
+        }
 
         console.log(`[Gemini] Successfully parsed and validated. Got ${validated.criteriaScores.length} scores`);
 
@@ -144,7 +236,10 @@ export async function evaluateWithGemini(
           lastError = rubricCheck.errors.join('; ');
           console.error(`[Gemini] Validation failed: ${lastError}`);
           if (attempt === 0) continue;
-          throw new Error(`AI output validation failed after retry: ${lastError}`);
+          throw new AIEvaluationError(
+            'AI_VALIDATION_ERROR',
+            `AI output validation failed after retry: ${lastError}`
+          );
         }
 
         console.log(`[Gemini] Validation successful with model ${modelName}`);
@@ -154,8 +249,13 @@ export async function evaluateWithGemini(
           retryCount: retryCount + attempt
         };
       } catch (err: any) {
-        lastError = err.message || 'Unknown error';
-        console.error(`[Gemini] Model ${modelName}, attempt ${attempt + 1} failed:`, lastError);
+        const evaluationErr = asEvaluationError(err, 'AI_PROVIDER_ERROR');
+        lastFailure = evaluationErr;
+        lastError = evaluationErr.message || 'Unknown error';
+        console.error(
+          `[Gemini] Model ${modelName}, attempt ${attempt + 1} failed (${evaluationErr.code}):`,
+          evaluationErr.details || lastError
+        );
         if (attempt === 1) {
           break;
         }
@@ -163,5 +263,8 @@ export async function evaluateWithGemini(
     }
   }
 
-  throw new Error(`AI evaluation failed for all configured models: ${lastError}`);
+  throw (
+    lastFailure ||
+    new AIEvaluationError('AI_PROVIDER_ERROR', `AI evaluation failed for all configured models: ${lastError}`)
+  );
 }

@@ -59,6 +59,9 @@ INSTRUCTIONS:
 4. Score ONLY the criteria provided. Do NOT invent new criteria.
 5. Provide clear reasoning for each score.
 6. Write strengths, weaknesses, and recommendations in Thai language.
+7. Return strictly valid JSON object only, no markdown wrappers.
+8. "score" must be an INTEGER only (1,2,3,4,5) - never decimal or string.
+9. "criteriaScores" must contain EXACTLY ${criteria.length} items, one per criterion ID listed below.
 
 Return ONLY valid JSON in this exact format (no markdown, no explanation outside JSON):
 {

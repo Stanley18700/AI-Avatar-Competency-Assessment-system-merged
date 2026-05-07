@@ -2,13 +2,109 @@ import { Router, Response } from 'express';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole, AuthRequest } from '../middleware/auth';
 import { encrypt } from '../services/encryptionService';
-import { evaluateWithGemini } from '../services/geminiService';
+import { AIEvaluationError, AIEvaluationErrorCode, evaluateWithGemini } from '../services/geminiService';
 import { generateChatResponse } from '../services/voiceChatService';
 import { calculateCategoryAverage, calculateWeightedTotal, calculateGap } from '../utils/scoreCalculator';
 import { parseJsonFields } from '../utils/jsonParser';
 
 const router = Router();
 router.use(authenticate);
+
+const SCORABLE_STATUSES = ['SELF_ASSESSED', 'AI_FAILED'] as const;
+type AIScoringFailureCode = AIEvaluationErrorCode | 'AI_PERSIST_ERROR';
+
+interface AIScoringFailurePayload {
+  status: 'AI_FAILED';
+  code: AIScoringFailureCode;
+  userMessage: string;
+  correlationId: string;
+}
+
+function canAccessSession(req: AuthRequest, nurseId: string): boolean {
+  return req.user!.role === 'ADMIN' || req.user!.role === 'REVIEWER' || req.user!.id === nurseId;
+}
+
+function canSubmitForScoring(status: string): boolean {
+  return (SCORABLE_STATUSES as readonly string[]).includes(status);
+}
+
+function createCorrelationId(sessionId: string): string {
+  return `${sessionId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function toAIEvaluationError(err: unknown): AIEvaluationError {
+  if (err instanceof AIEvaluationError) return err;
+  if (err instanceof Error) {
+    return new AIEvaluationError('AI_PROVIDER_ERROR', err.message, err.stack);
+  }
+  return new AIEvaluationError('AI_PROVIDER_ERROR', String(err));
+}
+
+function getUserMessageForCode(code: AIScoringFailureCode): string {
+  switch (code) {
+    case 'AI_CONFIG_ERROR':
+      return 'ระบบ AI ยังไม่ได้ตั้งค่าพร้อมใช้งาน กรุณาติดต่อผู้ดูแลระบบ';
+    case 'AI_VALIDATION_ERROR':
+      return 'ระบบ AI วิเคราะห์ผลได้ไม่ครบตามเกณฑ์ กรุณาลองส่งคำตอบอีกครั้ง';
+    case 'AI_PARSE_ERROR':
+      return 'ระบบ AI ตอบกลับในรูปแบบที่ประมวลผลไม่ได้ กรุณาลองใหม่อีกครั้ง';
+    case 'AI_PERSIST_ERROR':
+      return 'ระบบไม่สามารถบันทึกผลการประเมินได้ กรุณาลองใหม่อีกครั้ง';
+    case 'AI_PROVIDER_ERROR':
+    default:
+      return 'ระบบ AI ไม่พร้อมใช้งานชั่วคราว กรุณาลองใหม่อีกครั้ง';
+  }
+}
+
+function buildAIFailurePayload(code: AIScoringFailureCode, correlationId: string): AIScoringFailurePayload {
+  return {
+    status: 'AI_FAILED',
+    code,
+    userMessage: getUserMessageForCode(code),
+    correlationId,
+  };
+}
+
+async function persistAIFailure(
+  sessionId: string,
+  code: AIScoringFailureCode,
+  correlationId: string,
+  details: string
+): Promise<void> {
+  await prisma.assessmentSession.update({
+    where: { id: sessionId },
+    data: { status: 'AI_FAILED' }
+  });
+
+  await prisma.aIScore.upsert({
+    where: { sessionId },
+    create: {
+      sessionId,
+      criteriaScores: JSON.stringify([]),
+      categoryScores: JSON.stringify([]),
+      weightedTotal: null,
+      strengths: null,
+      weaknesses: null,
+      recommendations: null,
+      confidenceScore: null,
+      valid: false,
+      retryCount: 2,
+      rawResponse: `[${code}] ${details} | correlationId=${correlationId}`
+    },
+    update: {
+      criteriaScores: JSON.stringify([]),
+      categoryScores: JSON.stringify([]),
+      weightedTotal: null,
+      strengths: null,
+      weaknesses: null,
+      recommendations: null,
+      confidenceScore: null,
+      valid: false,
+      retryCount: 2,
+      rawResponse: `[${code}] ${details} | correlationId=${correlationId}`
+    }
+  });
+}
 
 // GET /api/assessments/my - Nurse's own assessments
 router.get('/my', async (req: AuthRequest, res: Response): Promise<void> => {
@@ -81,6 +177,11 @@ router.get('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
       return;
     }
 
+    if (!canAccessSession(req, session.nurseId)) {
+      res.status(403).json({ error: 'ไม่มีสิทธิ์เข้าถึงการประเมินนี้' });
+      return;
+    }
+
     // Get standard levels for this nurse's experience level
     const standardLevels = await prisma.standardLevel.findMany({
       where: { experienceLevel: session.experienceLevel }
@@ -148,6 +249,11 @@ router.post('/:id/self-score', requireRole('NURSE'), async (req: AuthRequest, re
       return;
     }
 
+    if (session.status !== 'IN_PROGRESS' && session.status !== 'SELF_ASSESSED') {
+      res.status(409).json({ error: 'ไม่สามารถแก้ไขคะแนนประเมินตนเองหลังส่งให้ AI แล้ว' });
+      return;
+    }
+
     let appliedScores = 0;
 
     // Upsert self scores
@@ -200,6 +306,11 @@ router.post('/:id/submit', requireRole('NURSE'), async (req: AuthRequest, res: R
 
     if (!session || session.nurseId !== req.user!.id) {
       res.status(404).json({ error: 'ไม่พบการประเมิน' });
+      return;
+    }
+
+    if (!canSubmitForScoring(session.status)) {
+      res.status(409).json({ error: 'กรุณาทำแบบประเมินตนเองก่อน หรือเริ่มแบบประเมินใหม่หากส่งผลแล้ว' });
       return;
     }
 
@@ -269,10 +380,12 @@ router.post('/:id/submit', requireRole('NURSE'), async (req: AuthRequest, res: R
     }
 
     console.log(`[Assessment ${id}] Starting AI evaluation with ${reasoningIndicators.length} reasoning indicators`);
+    let output: Awaited<ReturnType<typeof evaluateWithGemini>>['output'];
+    let rawResponse = '';
+    let retryCount = 0;
 
     try {
-      // Call AI evaluation
-      const { output, rawResponse, retryCount } = await evaluateWithGemini(
+      const evaluation = await evaluateWithGemini(
         allCriteria,
         {
           title: session.case.title,
@@ -282,7 +395,26 @@ router.post('/:id/submit', requireRole('NURSE'), async (req: AuthRequest, res: R
         },
         text
       );
+      output = evaluation.output;
+      rawResponse = evaluation.rawResponse;
+      retryCount = evaluation.retryCount;
+    } catch (evaluationErr) {
+      const aiErr = toAIEvaluationError(evaluationErr);
+      const correlationId = createCorrelationId(id);
+      const failurePayload = buildAIFailurePayload(aiErr.code, correlationId);
+      console.error(
+        `[Assessment ${id}] AI evaluation failed (${aiErr.code}) [${correlationId}]:`,
+        aiErr.details || aiErr.message
+      );
+      await persistAIFailure(id, aiErr.code, correlationId, aiErr.details || aiErr.message);
+      res.status(200).json({
+        ...failurePayload,
+        message: failurePayload.userMessage
+      });
+      return;
+    }
 
+    try {
       console.log(`[Assessment ${id}] AI evaluation successful. Scored ${output.criteriaScores.length} criteria`);
 
       // Calculate category averages and weighted total
@@ -291,9 +423,22 @@ router.post('/:id/submit', requireRole('NURSE'), async (req: AuthRequest, res: R
       const weightedTotal = calculateWeightedTotal(criteriaScoresTyped);
 
       // Store AI score
-      await prisma.aIScore.create({
-        data: {
+      await prisma.aIScore.upsert({
+        where: { sessionId: id },
+        create: {
           sessionId: id,
+          criteriaScores: JSON.stringify(output.criteriaScores),
+          categoryScores: JSON.stringify(categoryScores),
+          weightedTotal,
+          strengths: output.strengths,
+          weaknesses: output.weaknesses,
+          recommendations: output.recommendations,
+          confidenceScore: output.confidenceScore,
+          valid: true,
+          retryCount,
+          rawResponse
+        },
+        update: {
           criteriaScores: JSON.stringify(output.criteriaScores),
           categoryScores: JSON.stringify(categoryScores),
           weightedTotal,
@@ -342,30 +487,13 @@ router.post('/:id/submit', requireRole('NURSE'), async (req: AuthRequest, res: R
 
       console.log(`[Assessment ${id}] Successfully completed AI evaluation and stored results`);
       res.json({ message: 'ส่งคำตอบและประเมินโดย AI เสร็จสิ้น', status: 'AI_SCORED' });
-    } catch (aiError: any) {
-      console.error(`[Assessment ${id}] AI evaluation error:`, aiError.message || aiError);
-      console.error('Error details:', aiError);
-      
-      // Mark as failed but don't crash
-      await prisma.assessmentSession.update({
-        where: { id },
-        data: { status: 'AI_FAILED' }
-      });
-
-      await prisma.aIScore.create({
-        data: {
-          sessionId: id,
-          criteriaScores: JSON.stringify([]),
-          valid: false,
-          retryCount: 2,
-          rawResponse: aiError.message
-        }
-      });
-
-      res.status(200).json({ 
-        message: 'บันทึกคำตอบเรียบร้อย แต่ AI ไม่สามารถประเมินได้ กรุณาติดต่อผู้ดูแลระบบ',
-        status: 'AI_FAILED',
-        error: aiError.message
+    } catch (persistErr) {
+      const correlationId = createCorrelationId(id);
+      console.error(`[Assessment ${id}] AI persistence error [${correlationId}]:`, persistErr);
+      res.status(500).json({
+        error: getUserMessageForCode('AI_PERSIST_ERROR'),
+        code: 'AI_PERSIST_ERROR',
+        correlationId
       });
     }
   } catch (error) {
@@ -387,6 +515,11 @@ router.post('/:id/chat', requireRole('NURSE'), async (req: AuthRequest, res: Res
 
     if (!session || session.nurseId !== req.user!.id) {
       res.status(404).json({ error: 'ไม่พบการประเมิน' });
+      return;
+    }
+
+    if (!canSubmitForScoring(session.status)) {
+      res.status(409).json({ error: 'กรุณาทำแบบประเมินตนเองก่อน หรือเริ่มแบบประเมินใหม่หากส่งผลแล้ว' });
       return;
     }
 
@@ -465,6 +598,11 @@ router.post('/:id/submit-conversation', requireRole('NURSE'), async (req: AuthRe
       return;
     }
 
+    if (!canSubmitForScoring(session.status)) {
+      res.status(409).json({ error: 'กรุณาทำแบบประเมินตนเองก่อน หรือเริ่มแบบประเมินใหม่หากส่งผลแล้ว' });
+      return;
+    }
+
     // Build transcript from conversation
     const transcriptText = conversationHistory
       .map((m: { role: string; text: string }) =>
@@ -534,13 +672,36 @@ router.post('/:id/submit-conversation', requireRole('NURSE'), async (req: AuthRe
       reasoningIndicators
     };
 
+    let output: Awaited<ReturnType<typeof evaluateWithGemini>>['output'];
+    let rawResponse = '';
+    let retryCount = 0;
+
     try {
-      const { output, rawResponse, retryCount } = await evaluateWithGemini(
+      const evaluation = await evaluateWithGemini(
         allCriteria,
         caseInfo,
         nurseTranscriptText
       );
+      output = evaluation.output;
+      rawResponse = evaluation.rawResponse;
+      retryCount = evaluation.retryCount;
+    } catch (evaluationErr) {
+      const aiErr = toAIEvaluationError(evaluationErr);
+      const correlationId = createCorrelationId(id);
+      const failurePayload = buildAIFailurePayload(aiErr.code, correlationId);
+      console.error(
+        `[Assessment ${id}] Voice-chat AI evaluation failed (${aiErr.code}) [${correlationId}]:`,
+        aiErr.details || aiErr.message
+      );
+      await persistAIFailure(id, aiErr.code, correlationId, aiErr.details || aiErr.message);
+      res.status(200).json({
+        ...failurePayload,
+        message: failurePayload.userMessage
+      });
+      return;
+    }
 
+    try {
       // Store AI scores (same logic as submit endpoint)
       const criteriaScoresTyped = output.criteriaScores as Array<{ criteriaId: string; score: number; reasoning?: string }>;
       const categoryScores = calculateCategoryAverage(criteriaScoresTyped, criteriaToGroupMap);
@@ -616,19 +777,14 @@ router.post('/:id/submit-conversation', requireRole('NURSE'), async (req: AuthRe
       });
 
       res.json({ message: 'สนทนาเสร็จสิ้น AI ประเมินเรียบร้อย', status: 'AI_SCORED' });
-    } catch (aiError: any) {
-      console.error(`[Assessment ${id}] Voice-chat AI evaluation error:`, aiError.message);
-      await prisma.assessmentSession.update({ where: { id }, data: { status: 'AI_FAILED' } });
-      await prisma.aIScore.create({
-        data: {
-          sessionId: id,
-          criteriaScores: JSON.stringify([]),
-          valid: false,
-          retryCount: 2,
-          rawResponse: aiError.message
-        }
+    } catch (persistErr) {
+      const correlationId = createCorrelationId(id);
+      console.error(`[Assessment ${id}] Voice-chat AI persistence error [${correlationId}]:`, persistErr);
+      res.status(500).json({
+        error: getUserMessageForCode('AI_PERSIST_ERROR'),
+        code: 'AI_PERSIST_ERROR',
+        correlationId
       });
-      res.status(200).json({ message: 'บันทึกบทสนทนาเรียบร้อย แต่ AI ไม่สามารถประเมินได้', status: 'AI_FAILED' });
     }
   } catch (error) {
     console.error('Submit conversation error:', error);

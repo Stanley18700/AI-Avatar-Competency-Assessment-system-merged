@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import authRoutes from './routes/auth';
 import userRoutes from './routes/users';
 import departmentRoutes from './routes/departments';
@@ -12,6 +13,7 @@ import reportRoutes from './routes/reports';
 import analyticsRoutes from './routes/analytics';
 import idpRoutes from './routes/idp';
 import audioRoutes from './routes/audio';
+import azureRoutes from './routes/azure';
 import prisma from './lib/prisma';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/logger';
@@ -20,6 +22,72 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+function getConfiguredGeminiModels(): string[] {
+  return (process.env.GEMINI_MODELS || 'gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
+}
+
+async function runGeminiLiveCheck(): Promise<{ ok: boolean; model?: string; reason?: string }> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY;
+  if (!apiKey) {
+    return { ok: false, reason: 'missing_api_key' };
+  }
+
+  const models = getConfiguredGeminiModels();
+  if (models.length === 0) {
+    return { ok: false, reason: 'no_models_configured' };
+  }
+
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({
+      model: models[0],
+      generationConfig: { temperature: 0, maxOutputTokens: 8 }
+    });
+    const result = await model.generateContent('Reply with only: OK');
+    const text = result.response.text().trim();
+    return { ok: text.length > 0, model: models[0], reason: text.length > 0 ? undefined : 'empty_response' };
+  } catch (err) {
+    return { ok: false, model: models[0], reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function buildDependencyChecks(includeGeminiLive: boolean): Promise<{
+  database: boolean;
+  geminiConfigured: boolean;
+  jwtConfigured: boolean;
+  encryptionConfigured: boolean;
+  geminiLive?: { ok: boolean; model?: string; reason?: string };
+}> {
+  const checks: {
+    database: boolean;
+    geminiConfigured: boolean;
+    jwtConfigured: boolean;
+    encryptionConfigured: boolean;
+    geminiLive?: { ok: boolean; model?: string; reason?: string };
+  } = {
+    database: false,
+    geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY),
+    jwtConfigured: Boolean(process.env.JWT_SECRET),
+    encryptionConfigured: Boolean(process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_IV),
+  };
+
+  try {
+    await prisma.$queryRawUnsafe('SELECT 1');
+    checks.database = true;
+  } catch (error) {
+    console.error('Database health check failed:', error);
+  }
+
+  if (includeGeminiLive) {
+    checks.geminiLive = await runGeminiLiveCheck();
+  }
+
+  return checks;
+}
 
 const allowedOrigins = [
   process.env.CLIENT_URL,
@@ -53,6 +121,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/idp', idpRoutes);
 app.use('/api/audio', audioRoutes);
+app.use('/api/azure', azureRoutes);
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -63,22 +132,11 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.get('/health/dependencies', async (_req, res) => {
-  const checks = {
-    database: false,
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY),
-    jwtConfigured: Boolean(process.env.JWT_SECRET),
-    encryptionConfigured: Boolean(process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_IV),
-  };
-
-  try {
-    await prisma.$queryRawUnsafe('SELECT 1');
-    checks.database = true;
-  } catch (error) {
-    console.error('Database health check failed:', error);
-  }
-
-  const ok = checks.database && checks.geminiConfigured && checks.jwtConfigured && checks.encryptionConfigured;
+app.get('/health/dependencies', async (req, res) => {
+  const includeGeminiLive = req.query.geminiLive === '1';
+  const checks = await buildDependencyChecks(includeGeminiLive);
+  const ok = checks.database && checks.geminiConfigured && checks.jwtConfigured && checks.encryptionConfigured
+    && (checks.geminiLive ? checks.geminiLive.ok : true);
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
@@ -86,22 +144,11 @@ app.get('/health/dependencies', async (_req, res) => {
   });
 });
 
-app.get('/api/health/dependencies', async (_req, res) => {
-  const checks = {
-    database: false,
-    geminiConfigured: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_CLOUD_API_KEY),
-    jwtConfigured: Boolean(process.env.JWT_SECRET),
-    encryptionConfigured: Boolean(process.env.ENCRYPTION_KEY && process.env.ENCRYPTION_IV),
-  };
-
-  try {
-    await prisma.$queryRawUnsafe('SELECT 1');
-    checks.database = true;
-  } catch (error) {
-    console.error('Database health check failed:', error);
-  }
-
-  const ok = checks.database && checks.geminiConfigured && checks.jwtConfigured && checks.encryptionConfigured;
+app.get('/api/health/dependencies', async (req, res) => {
+  const includeGeminiLive = req.query.geminiLive === '1';
+  const checks = await buildDependencyChecks(includeGeminiLive);
+  const ok = checks.database && checks.geminiConfigured && checks.jwtConfigured && checks.encryptionConfigured
+    && (checks.geminiLive ? checks.geminiLive.ok : true);
   res.status(ok ? 200 : 503).json({
     status: ok ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),

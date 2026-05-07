@@ -27,6 +27,7 @@ interface ChatResponse {
 
 const MAX_TURNS = 4; // 4 AI questions total before wrapping up
 const MIN_NURSE_TURNS_FOR_COMPLETION = 3;
+const HISTORY_WINDOW_MESSAGES = 6;
 const COMPLETION_PHRASES = [
   'จบแล้ว',
   'จบค่ะ',
@@ -226,8 +227,9 @@ export async function generateChatResponse(
     ? caseInfo.reasoningIndicators.map((r, i) => `${i + 1}. ${r}`).join('\n')
     : 'ไม่มีเครื่องชี้วัดเฉพาะ';
 
-  const historyText = history.length > 0
-    ? history.map(m => `${m.role === 'ai' ? 'AI Avatar' : 'พยาบาล'}: ${m.text}`).join('\n\n')
+  const recentHistory = history.slice(-HISTORY_WINDOW_MESSAGES);
+  const historyText = recentHistory.length > 0
+    ? recentHistory.map(m => `${m.role === 'ai' ? 'AI Avatar' : 'พยาบาล'}: ${m.text}`).join('\n\n')
     : '(ยังไม่เริ่มบทสนทนา)';
 
   const prompt = `คุณคือ "AI Avatar พยาบาลผู้ช่วยประเมิน" (AI Nurse Assessor) ที่สถาบันศูนย์การแพทย์มหาวิทยาลัยแม่ฟ้าหลวง
@@ -296,7 +298,7 @@ ${aiTurns === 0
       generationConfig: {
         temperature: 0.7,
         topP: 0.9,
-        maxOutputTokens: 1024,
+        maxOutputTokens: 256,
       }
     });
 

@@ -119,6 +119,8 @@ export interface AIScore {
   recommendations?: string;
   confidenceScore?: number;
   valid: boolean;
+  retryCount?: number;
+  rawResponse?: string;
 }
 
 export interface CriteriaScore {

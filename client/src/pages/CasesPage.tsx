@@ -96,11 +96,18 @@ export default function CasesPage() {
         ))}
       </div>
 
-      {/* Modal */}
+      {/* Modal — full viewport; items-start avoids vertical center clipping when the form is tall */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-          <div className="bg-white rounded-xl p-6 w-full max-w-2xl my-8">
-            <h3 className="text-lg font-semibold mb-4">{editing ? t.edit : t.create} {t.caseScenario}</h3>
+        <div
+          className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-6 pb-10 sm:p-6 sm:pt-8 sm:pb-12"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="case-modal-title"
+        >
+          <div className="bg-white rounded-xl p-6 w-full max-w-2xl shadow-2xl mb-8 shrink-0 max-h-[calc(100dvh-2.5rem)] overflow-y-auto">
+            <h3 id="case-modal-title" className="text-lg font-semibold mb-4">
+              {editing ? t.edit : t.create} {t.caseScenario}
+            </h3>
             <form onSubmit={handleSubmit} className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>

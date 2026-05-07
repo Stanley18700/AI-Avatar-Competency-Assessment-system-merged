@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useLanguage } from '../contexts/LanguageContext';
+import LanguageSelector from '../components/LanguageSelector';
 import { Brain, Sparkles, Loader2 } from 'lucide-react';
 
 export default function LoginPage() {
@@ -49,6 +50,10 @@ export default function LoginPage() {
         backgroundImage: 'linear-gradient(rgba(255,255,255,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.1) 1px, transparent 1px)',
         backgroundSize: '60px 60px'
       }} />
+
+      <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-20 max-w-[calc(100vw-1.5rem)]">
+        <LanguageSelector variant="sidebar" />
+      </div>
 
       {/* Login Card */}
       <div className="relative z-10 w-full max-w-md animate-fade-in-up rounded-2xl sm:rounded-3xl bg-primary-900/95 backdrop-blur-xl border border-white/10 shadow-2xl p-6 sm:p-8">

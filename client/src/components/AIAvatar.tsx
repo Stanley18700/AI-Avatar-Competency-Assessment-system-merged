@@ -11,6 +11,8 @@ interface AIAvatarProps {
 export default function AIAvatar({ state, size = 200, className = '' }: AIAvatarProps) {
   const [blinkCycle, setBlinkCycle] = useState(false);
   const [mouthOpen, setMouthOpen] = useState(false);
+  // Which thinking dot (0/1/2) is bright — replaces SMIL <animate> to avoid removeChild crashes
+  const [thinkDot, setThinkDot] = useState(0);
 
   // Blink animation
   useEffect(() => {
@@ -25,6 +27,13 @@ export default function AIAvatar({ state, size = 200, className = '' }: AIAvatar
   useEffect(() => {
     if (state !== 'speaking') { setMouthOpen(false); return; }
     const interval = setInterval(() => setMouthOpen(o => !o), 180);
+    return () => clearInterval(interval);
+  }, [state]);
+
+  // Thinking dot animation — React state instead of SMIL to avoid DOM reconciliation errors
+  useEffect(() => {
+    if (state !== 'thinking') { setThinkDot(0); return; }
+    const interval = setInterval(() => setThinkDot(d => (d + 1) % 3), 300);
     return () => clearInterval(interval);
   }, [state]);
 
@@ -205,15 +214,9 @@ export default function AIAvatar({ state, size = 200, className = '' }: AIAvatar
         {state === 'thinking' && (
           <g transform={`translate(${cx + r * 0.55}, ${cy + r * 0.3})`}>
             <circle r={r * 0.12} fill="#d97706" opacity={0.9} />
-            <circle cx={-r * 0.04} cy={0} r={r * 0.02} fill="white">
-              <animate attributeName="opacity" values="1;0.3;1" dur="0.8s" repeatCount="indefinite" />
-            </circle>
-            <circle cx={0} cy={0} r={r * 0.02} fill="white">
-              <animate attributeName="opacity" values="0.3;1;0.3" dur="0.8s" repeatCount="indefinite" />
-            </circle>
-            <circle cx={r * 0.04} cy={0} r={r * 0.02} fill="white">
-              <animate attributeName="opacity" values="1;0.3;1" dur="0.8s" repeatCount="indefinite" begin="0.3s" />
-            </circle>
+            <circle cx={-r * 0.04} cy={0} r={r * 0.02} fill="white" opacity={thinkDot === 0 ? 1 : 0.3} />
+            <circle cx={0}         cy={0} r={r * 0.02} fill="white" opacity={thinkDot === 1 ? 1 : 0.3} />
+            <circle cx={r * 0.04}  cy={0} r={r * 0.02} fill="white" opacity={thinkDot === 2 ? 1 : 0.3} />
           </g>
         )}
       </svg>

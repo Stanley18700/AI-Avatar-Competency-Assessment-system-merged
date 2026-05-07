@@ -367,7 +367,6 @@ body {
 .content-pane {
   background:
     linear-gradient(180deg, rgba(236, 253, 250, 0.74) 0%, rgba(240, 249, 255, 0.72) 100%);
-  min-height: 100%;
 }
 
 .page-shell {
