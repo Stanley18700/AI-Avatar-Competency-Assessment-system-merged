@@ -337,24 +337,12 @@ ${aiTurns === 0
   // ── AI Studio model loop ────────────────────────────────────────────────
   for (const modelName of configuredModels) {
     try {
-      const response = await genAI.models.generateContent({
-        model: modelName,
-        contents: prompt,
-        config: {
-          temperature: 0.7,
-          topP: 0.9,
-        },
-      });
-
-      const responseText = response.text ?? '';
-
-      if (!responseText || !responseText.trim()) {
-        throw new Error('Empty model response');
-      }
+      const responseText = await generateWithVertex(prompt, modelName);
+      if (!responseText) throw new Error('Empty Vertex AI response');
 
       let jsonStr = responseText.trim();
 
-      const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+      const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
       if (fenceMatch) {
         jsonStr = fenceMatch[1].trim();
       }
@@ -368,19 +356,14 @@ ${aiTurns === 0
       }
 
       const parsed = normalizeChatResponsePayload(JSON.parse(jsonStr), aiTurns);
-      if (forceComplete) {
-        parsed.isComplete = true;
-      }
-
-      console.log(`[VoiceChat] Model ${modelName} → turn ${parsed.turnNumber}, complete=${parsed.isComplete}`);
+      if (forceComplete) parsed.isComplete = true;
+      console.log(`[Vertex] VoiceChat success with model ${modelName}`);
       return parsed;
-
     } catch (err: any) {
-      lastError = err.message || 'Unknown error';
-      console.error(`[VoiceChat] Model ${modelName} failed:`, lastError);
+      console.error(`[Vertex] VoiceChat model ${modelName} failed:`, err.message);
     }
-  
   }
+
 
   // ── Vertex AI fallback ──────────────────────────────────────────
   const vertexProject = process.env.VERTEX_PROJECT_ID;
@@ -394,10 +377,20 @@ ${aiTurns === 0
         const responseText = await generateWithVertex(prompt, modelName);
         if (!responseText) throw new Error('Empty Vertex AI response');
 
-        let jsonStr = responseText;
-        const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (jsonMatch) { jsonStr = jsonMatch[1].trim(); }
-        else { const braceMatch = responseText.match(/\{[\s\S]*?\}/); if (braceMatch) jsonStr = braceMatch[0]; }
+        let jsonStr = responseText.trim();
+
+        const fenceMatch = jsonStr.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/s);
+        if (fenceMatch) {
+          jsonStr = fenceMatch[1].trim();
+        }
+
+        if (!jsonStr.startsWith('{')) {
+          const braceStart = jsonStr.indexOf('{');
+          const braceEnd = jsonStr.lastIndexOf('}');
+          if (braceStart !== -1 && braceEnd !== -1 && braceEnd > braceStart) {
+            jsonStr = jsonStr.slice(braceStart, braceEnd + 1);
+          }
+        }
 
         const parsed = normalizeChatResponsePayload(JSON.parse(jsonStr), aiTurns);
         if (forceComplete) parsed.isComplete = true;
